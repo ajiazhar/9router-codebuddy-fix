@@ -5,7 +5,7 @@
  * Automatically patches 9router's CodeBuddy executor to include official IDE verification headers.
  * Resolves Error 11128 ("channel verification failed / request illegal").
  * 
- * Works on Linux (VPS), macOS, and Windows.
+ * Works on Linux (VPS), macOS, Windows, and Docker containers.
  */
 
 const fs = require('fs');
@@ -16,21 +16,20 @@ console.log('=== 9Router CodeBuddy Fix Patcher ===\n');
 
 // 1. Detect 9router installation path
 function get9RouterPath() {
-  // Check environment variable
   if (process.env.NINEROUTER_PATH && fs.existsSync(process.env.NINEROUTER_PATH)) {
     return process.env.NINEROUTER_PATH;
   }
   
-  // Check CLI argument
   if (process.argv[2] && fs.existsSync(process.argv[2])) {
-    let argPath = path.resolve(process.argv[2]);
-    // If user passed bin path or nested path, resolve to package root
-    if (fs.existsSync(path.join(argPath, 'app', '.next-cli-build'))) return argPath;
-    if (fs.existsSync(path.join(argPath, '..', 'app', '.next-cli-build'))) return path.dirname(argPath);
-    return argPath;
+    return path.resolve(process.argv[2]);
   }
 
-  // Strategy A: Detect from "which 9router" or "where 9router" binary symlink
+  // Strategy A: Check Docker default /app directory
+  if (fs.existsSync('/app/.next') || fs.existsSync('/app/custom-server.js') || fs.existsSync('/app/package.json')) {
+    return '/app';
+  }
+
+  // Strategy B: Detect from "which 9router" or "where 9router" binary symlink
   try {
     const isWin = process.platform === 'win32';
     const whichCmd = isWin ? 'where 9router' : 'which 9router 2>/dev/null';
@@ -52,34 +51,23 @@ function get9RouterPath() {
     }
   } catch (e) {}
 
-  // Strategy B: npm root -g
+  // Strategy C: npm root -g
   try {
     const globalRoot = execSync('npm root -g', { encoding: 'utf8' }).trim();
     const candidate = path.join(globalRoot, '9router');
     if (fs.existsSync(candidate)) return candidate;
   } catch (e) {}
 
-  // Strategy C: pnpm / yarn / bun global root
-  for (const mgr of ['pnpm root -g', 'yarn global dir', 'bun pm -g bin']) {
-    try {
-      const out = execSync(mgr, { encoding: 'utf8' }).trim();
-      const candidate = path.join(out, 'node_modules', '9router');
-      if (fs.existsSync(candidate)) return candidate;
-      const direct = path.join(out, '9router');
-      if (fs.existsSync(direct)) return direct;
-    } catch (e) {}
-  }
-
-  // Strategy D: Common Linux / macOS / Windows fallbacks
+  // Strategy D: Common Linux / macOS / Windows / Docker fallbacks
   const fallbacks = [
+    '/app',
+    '/usr/src/app',
     '/usr/lib/node_modules/9router',
     '/usr/local/lib/node_modules/9router',
     '/var/lib/node_modules/9router',
-    path.join(process.env.HOME || '', '.npm-global', 'lib', 'node_modules', '9router'),
-    path.join(process.env.HOME || '', '.local', 'share', 'pnpm', 'global', '5', 'node_modules', '9router')
+    path.join(process.env.HOME || '', '.npm-global', 'lib', 'node_modules', '9router')
   ];
 
-  // Add NVM versions if present
   const nvmDir = path.join(process.env.HOME || '', '.nvm', 'versions', 'node');
   if (fs.existsSync(nvmDir)) {
     try {
@@ -104,21 +92,56 @@ function get9RouterPath() {
 const ninerouterDir = get9RouterPath();
 if (!ninerouterDir) {
   console.error('[!] Error: 9router installation not found automatically.');
-  console.error('    Please find your 9router path using:');
-  console.error('        which 9router');
-  console.error('        readlink -f $(which 9router)');
-  console.error('    Then pass the path, for example:');
-  console.error('        node patch.js /usr/local/lib/node_modules/9router\n');
+  console.error('    Please specify the path: node patch.js /path/to/9router\n');
   process.exit(1);
 }
 
 console.log(`[+] Found 9router at: ${ninerouterDir}`);
 
-const chunksDir = path.join(ninerouterDir, 'app', '.next-cli-build', 'server', 'chunks');
-if (!fs.existsSync(chunksDir)) {
-  console.error(`[!] Error: Chunks directory not found at: ${chunksDir}`);
+// Find chunks directory (supports npm build, standalone build, Docker build)
+function findChunksDir(baseDir) {
+  const possiblePaths = [
+    path.join(baseDir, 'app', '.next-cli-build', 'server', 'chunks'),
+    path.join(baseDir, '.next-cli-build', 'server', 'chunks'),
+    path.join(baseDir, '.next', 'server', 'chunks'),
+    path.join(baseDir, '.next', 'standalone', '.next', 'server', 'chunks'),
+    path.join(baseDir, 'server', 'chunks')
+  ];
+
+  for (const p of possiblePaths) {
+    if (fs.existsSync(p)) return p;
+  }
+
+  // Recursive search if not in standard locations
+  function search(dir, depth = 0) {
+    if (depth > 4) return null;
+    try {
+      const items = fs.readdirSync(dir);
+      if (items.includes('server') && fs.existsSync(path.join(dir, 'server', 'chunks'))) {
+        return path.join(dir, 'server', 'chunks');
+      }
+      for (const item of items) {
+        if (item === 'node_modules' || item.startsWith('.')) continue;
+        const sub = path.join(dir, item);
+        if (fs.statSync(sub).isDirectory()) {
+          const found = search(sub, depth + 1);
+          if (found) return found;
+        }
+      }
+    } catch (e) {}
+    return null;
+  }
+
+  return search(baseDir);
+}
+
+const chunksDir = findChunksDir(ninerouterDir);
+if (!chunksDir || !fs.existsSync(chunksDir)) {
+  console.error(`[!] Error: Server chunks directory not found inside: ${ninerouterDir}`);
   process.exit(1);
 }
+
+console.log(`[+] Found chunks directory at: ${chunksDir}`);
 
 // 2. Find target chunk file containing codebuddy-intl
 console.log('[*] Scanning chunks for CodeBuddy executor...');
@@ -131,7 +154,7 @@ for (const file of chunkFiles) {
   const filePath = path.join(chunksDir, file);
   try {
     const content = fs.readFileSync(filePath, 'utf8');
-    if (content.includes('super("codebuddy-intl")')) {
+    if (content.includes('codebuddy-intl')) {
       targetFile = filePath;
       fileContent = content;
       break;
@@ -168,31 +191,30 @@ const buildHeadersCode = `buildHeaders(a,b=!0,c,d,f){let h=super.buildHeaders(a,
 let patchedContent = fileContent;
 
 // Patch codebuddy-intl
-const intlTarget = 'class e extends d.L{constructor(){super("codebuddy-intl")}';
-if (patchedContent.includes(intlTarget)) {
-  patchedContent = patchedContent.replace(intlTarget, `${intlTarget}${buildHeadersCode}`);
-  console.log('[+] Injected verification headers for codebuddy-intl.');
+const intlRegex = /class\s+([A-Za-z0-9_]+)\s+extends\s+([A-Za-z0-9_$.]+)\{constructor\(\)\{super\("codebuddy-intl"\)\}/;
+if (intlRegex.test(patchedContent)) {
+  patchedContent = patchedContent.replace(intlRegex, (match) => `${match}${buildHeadersCode}`);
+  console.log('[+] Injected headers for codebuddy-intl.');
 } else {
-  console.warn('[-] Warning: Target signature for codebuddy-intl not found directly. Attempting regex...');
-  const intlRegex = /class\s+([A-Za-z0-9_]+)\s+extends\s+([A-Za-z0-9_$.]+)\{constructor\(\)\{super\("codebuddy-intl"\)\}/;
-  if (intlRegex.test(patchedContent)) {
-    patchedContent = patchedContent.replace(intlRegex, (match) => `${match}${buildHeadersCode}`);
-    console.log('[+] Injected headers for codebuddy-intl via regex.');
+  const intlSimple = 'super("codebuddy-intl")}';
+  if (patchedContent.includes(intlSimple)) {
+    patchedContent = patchedContent.replace(intlSimple, `${intlSimple}${buildHeadersCode}`);
+    console.log('[+] Injected headers for codebuddy-intl (fallback match).');
   } else {
-    console.error('[!] Failed to patch codebuddy-intl');
+    console.warn('[-] Warning: could not match codebuddy-intl constructor');
   }
 }
 
 // Patch codebuddy-cn
-const cnTarget = 'class e extends d.L{constructor(){super("codebuddy-cn")}';
-if (patchedContent.includes(cnTarget)) {
-  patchedContent = patchedContent.replace(cnTarget, `${cnTarget}${buildHeadersCode}`);
-  console.log('[+] Injected verification headers for codebuddy-cn.');
+const cnRegex = /class\s+([A-Za-z0-9_]+)\s+extends\s+([A-Za-z0-9_$.]+)\{constructor\(\)\{super\("codebuddy-cn"\)\}/;
+if (cnRegex.test(patchedContent)) {
+  patchedContent = patchedContent.replace(cnRegex, (match) => `${match}${buildHeadersCode}`);
+  console.log('[+] Injected headers for codebuddy-cn.');
 } else {
-  const cnRegex = /class\s+([A-Za-z0-9_]+)\s+extends\s+([A-Za-z0-9_$.]+)\{constructor\(\)\{super\("codebuddy-cn"\)\}/;
-  if (cnRegex.test(patchedContent)) {
-    patchedContent = patchedContent.replace(cnRegex, (match) => `${match}${buildHeadersCode}`);
-    console.log('[+] Injected headers for codebuddy-cn via regex.');
+  const cnSimple = 'super("codebuddy-cn")}';
+  if (patchedContent.includes(cnSimple)) {
+    patchedContent = patchedContent.replace(cnSimple, `${cnSimple}${buildHeadersCode}`);
+    console.log('[+] Injected headers for codebuddy-cn (fallback match).');
   }
 }
 
@@ -209,29 +231,5 @@ try {
   process.exit(1);
 }
 
-// 7. Clear SQLite model locks if db exists
-function clearDatabaseLocks() {
-  const dbPaths = [
-    path.join(process.env.HOME || '', '.9router', 'db', 'data.sqlite'),
-    path.join(process.env.APPDATA || '', '9router', 'db', 'data.sqlite')
-  ];
-
-  for (const dbPath of dbPaths) {
-    if (fs.existsSync(dbPath)) {
-      try {
-        execSync(`sqlite3 "${dbPath}" "UPDATE providerConnections SET data = json_set(data, '$.modelLocks', json('{}')) WHERE provider LIKE 'codebuddy%';"`, { stdio: 'ignore' });
-        console.log(`[+] Cleared modelLocks in database: ${dbPath}`);
-      } catch (e) {
-        // Ignore if sqlite3 cli not installed
-      }
-    }
-  }
-}
-
-clearDatabaseLocks();
-
 console.log('\n[✔] Patch applied successfully!');
-console.log('[*] IMPORTANT: Please restart 9router for changes to take effect:');
-console.log('    - If running via PM2:      pm2 restart 9router');
-console.log('    - If running via systemd:  sudo systemctl restart 9router');
-console.log('    - If running manually:     Stop and re-run "9router"');
+console.log('[*] IMPORTANT: Please restart 9router (e.g. docker restart 9router)');

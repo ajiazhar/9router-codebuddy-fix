@@ -1,0 +1,20 @@
+{
+  "name": "9router-codebuddy-fix",
+  "version": "1.0.0",
+  "description": "Hotfix patch for Tencent CodeBuddy provider on 9router (resolves Error 11128 channel verification)",
+  "main": "patch.js",
+  "scripts": {
+    "patch": "node patch.js",
+    "restore": "node restore.js"
+  },
+  "keywords": [
+    "9router",
+    "codebuddy",
+    "tencent",
+    "ai-gateway",
+    "patch",
+    "deepseek"
+  ],
+  "author": "",
+  "license": "MIT"
+}

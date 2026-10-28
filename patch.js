@@ -98,81 +98,84 @@ if (!ninerouterDir) {
 
 console.log(`[+] Found 9router at: ${ninerouterDir}`);
 
-// Find chunks directory (supports npm build, standalone build, Docker build)
-function findChunksDir(baseDir) {
-  const possiblePaths = [
+// Find all chunks directories (supports npm build, standalone build, Docker build)
+function findAllChunksDirs(baseDir) {
+  const results = [];
+  const standard = [
     path.join(baseDir, 'app', '.next-cli-build', 'server', 'chunks'),
     path.join(baseDir, '.next-cli-build', 'server', 'chunks'),
     path.join(baseDir, '.next', 'server', 'chunks'),
     path.join(baseDir, '.next', 'standalone', '.next', 'server', 'chunks'),
     path.join(baseDir, 'server', 'chunks')
   ];
-
-  for (const p of possiblePaths) {
-    if (fs.existsSync(p)) return p;
+  for (const s of standard) {
+    if (fs.existsSync(s) && !results.includes(s)) results.push(s);
   }
 
-  // Recursive search if not in standard locations
+  // Recursive search to be 100% sure
   function search(dir, depth = 0) {
-    if (depth > 4) return null;
+    if (depth > 5) return;
     try {
       const items = fs.readdirSync(dir);
-      if (items.includes('server') && fs.existsSync(path.join(dir, 'server', 'chunks'))) {
-        return path.join(dir, 'server', 'chunks');
+      if (items.includes('chunks') && dir.endsWith('server')) {
+        const cPath = path.join(dir, 'chunks');
+        if (!results.includes(cPath)) results.push(cPath);
       }
       for (const item of items) {
-        if (item === 'node_modules' || item.startsWith('.')) continue;
+        if (item === 'node_modules' || (item.startsWith('.') && item !== '.next' && item !== '.next-cli-build')) continue;
         const sub = path.join(dir, item);
-        if (fs.statSync(sub).isDirectory()) {
-          const found = search(sub, depth + 1);
-          if (found) return found;
-        }
+        try {
+          if (fs.statSync(sub).isDirectory()) search(sub, depth + 1);
+        } catch (e) {}
       }
     } catch (e) {}
-    return null;
   }
 
-  return search(baseDir);
+  search(baseDir);
+  return results;
 }
 
-const chunksDir = findChunksDir(ninerouterDir);
-if (!chunksDir || !fs.existsSync(chunksDir)) {
+const chunksDirs = findAllChunksDirs(ninerouterDir);
+if (chunksDirs.length === 0) {
   console.error(`[!] Error: Server chunks directory not found inside: ${ninerouterDir}`);
   process.exit(1);
 }
 
-console.log(`[+] Found chunks directory at: ${chunksDir}`);
+console.log(`[+] Searching in chunk directorie(s):`, chunksDirs);
 
-// 2. Find target chunk file containing codebuddy-intl
-console.log('[*] Scanning chunks for CodeBuddy executor...');
-const chunkFiles = fs.readdirSync(chunksDir).filter(f => f.endsWith('.js') && !f.endsWith('.bak'));
-
+// 2. Find target chunk file containing super("codebuddy-intl")
+console.log('[*] Scanning chunks specifically for CodeBuddy executor class...');
 let targetFile = null;
 let fileContent = '';
 
-for (const file of chunkFiles) {
-  const filePath = path.join(chunksDir, file);
-  try {
-    const content = fs.readFileSync(filePath, 'utf8');
-    if (content.includes('codebuddy-intl')) {
-      targetFile = filePath;
-      fileContent = content;
-      break;
-    }
-  } catch (e) {}
+for (const dir of chunksDirs) {
+  const files = fs.readdirSync(dir).filter(f => f.endsWith('.js') && !f.endsWith('.bak'));
+  for (const file of files) {
+    const filePath = path.join(dir, file);
+    try {
+      const content = fs.readFileSync(filePath, 'utf8');
+      // Must contain super("codebuddy-intl") or constructor with codebuddy-intl
+      if (content.includes('super("codebuddy-intl")') || content.includes("super('codebuddy-intl')")) {
+        targetFile = filePath;
+        fileContent = content;
+        break;
+      }
+    } catch (e) {}
+  }
+  if (targetFile) break;
 }
 
 if (!targetFile) {
-  console.error('[!] Error: Could not find chunk containing CodeBuddy executor.');
+  console.error('[!] Error: Could not find chunk containing CodeBuddy executor (super("codebuddy-intl")).');
   process.exit(1);
 }
 
-console.log(`[+] Found target chunk: ${path.basename(targetFile)}`);
+console.log(`[+] Found target chunk: ${targetFile}`);
 
 // Check if already patched
 if (fileContent.includes('X-Conversation-Request-ID') && fileContent.includes('x-codebuddy-request')) {
-  console.log('[*] Chunk is already patched with CodeBuddy headers.');
-  console.log('[+] No changes needed.');
+  console.log('[*] Chunk is ALREADY patched with CodeBuddy verification headers.');
+  console.log('[✔] No changes needed.');
   process.exit(0);
 }
 
@@ -189,33 +192,42 @@ if (!fs.existsSync(backupFile)) {
 const buildHeadersCode = `buildHeaders(a,b=!0,c,d,f){let h=super.buildHeaders(a,b,c,d,f);let u=()=>{try{if(globalThis.crypto?.randomUUID)return globalThis.crypto.randomUUID().replace(/-/g,"")}catch(e){}let s="";for(let i=0;i<32;i++)s+=Math.floor(Math.random()*16).toString(16);return s};let m=u(),t=u(),s=t.slice(0,16),p=t.slice(16,32);h["Accept"]="application/json, text/plain, */*";h["X-Requested-With"]="XMLHttpRequest";h["X-Request-ID"]=m;h["X-Conversation-ID"]=m;h["X-Conversation-Request-ID"]=m;h["X-Conversation-Message-ID"]=m;h["X-Request-Trace-Id"]=t;h["b3"]=t+"-"+s+"-1-"+p;h["X-B3-TraceId"]=t;h["X-B3-ParentSpanId"]=p;h["X-B3-SpanId"]=s;h["X-B3-Sampled"]="1";h["X-Agent-Intent"]="craft";h["X-Domain"]="www.codebuddy.ai";h["X-IDE-Type"]="VSCode";h["X-IDE-Name"]="VSCode";h["X-IDE-Version"]="1.139.0";h["X-Product-Version"]="4.12.0";h["X-Product"]="SaaS";h["X-Env-ID"]="production";h["User-Agent"]="VSCode/1.139.0 CodeBuddy/4.12.0";h["x-codebuddy-request"]="1";if(a?.apiKey)h["X-API-Key"]=a.apiKey;if(a?.accessToken)h["Authorization"]=\`Bearer \${a.accessToken}\`;return h}`;
 
 let patchedContent = fileContent;
+let patchedIntl = false;
+let patchedCn = false;
 
 // Patch codebuddy-intl
-const intlRegex = /class\s+([A-Za-z0-9_]+)\s+extends\s+([A-Za-z0-9_$.]+)\{constructor\(\)\{super\("codebuddy-intl"\)\}/;
+const intlRegex = /class\s+([A-Za-z0-9_]+)\s+extends\s+([A-Za-z0-9_$.]+)\{constructor\(\)\{super\(["']codebuddy-intl["']\)\}/;
 if (intlRegex.test(patchedContent)) {
   patchedContent = patchedContent.replace(intlRegex, (match) => `${match}${buildHeadersCode}`);
-  console.log('[+] Injected headers for codebuddy-intl.');
+  console.log('[+] Injected headers for codebuddy-intl (via class regex).');
+  patchedIntl = true;
 } else {
-  const intlSimple = 'super("codebuddy-intl")}';
-  if (patchedContent.includes(intlSimple)) {
-    patchedContent = patchedContent.replace(intlSimple, `${intlSimple}${buildHeadersCode}`);
-    console.log('[+] Injected headers for codebuddy-intl (fallback match).');
-  } else {
-    console.warn('[-] Warning: could not match codebuddy-intl constructor');
+  const targetExact = 'class e extends d.L{constructor(){super("codebuddy-intl")}';
+  if (patchedContent.includes(targetExact)) {
+    patchedContent = patchedContent.replace(targetExact, `${targetExact}${buildHeadersCode}`);
+    console.log('[+] Injected headers for codebuddy-intl (via exact string).');
+    patchedIntl = true;
   }
 }
 
 // Patch codebuddy-cn
-const cnRegex = /class\s+([A-Za-z0-9_]+)\s+extends\s+([A-Za-z0-9_$.]+)\{constructor\(\)\{super\("codebuddy-cn"\)\}/;
+const cnRegex = /class\s+([A-Za-z0-9_]+)\s+extends\s+([A-Za-z0-9_$.]+)\{constructor\(\)\{super\(["']codebuddy-cn["']\)\}/;
 if (cnRegex.test(patchedContent)) {
   patchedContent = patchedContent.replace(cnRegex, (match) => `${match}${buildHeadersCode}`);
-  console.log('[+] Injected headers for codebuddy-cn.');
+  console.log('[+] Injected headers for codebuddy-cn (via class regex).');
+  patchedCn = true;
 } else {
-  const cnSimple = 'super("codebuddy-cn")}';
-  if (patchedContent.includes(cnSimple)) {
-    patchedContent = patchedContent.replace(cnSimple, `${cnSimple}${buildHeadersCode}`);
-    console.log('[+] Injected headers for codebuddy-cn (fallback match).');
+  const cnExact = 'class e extends d.L{constructor(){super("codebuddy-cn")}';
+  if (patchedContent.includes(cnExact)) {
+    patchedContent = patchedContent.replace(cnExact, `${cnExact}${buildHeadersCode}`);
+    console.log('[+] Injected headers for codebuddy-cn (via exact string).');
+    patchedCn = true;
   }
+}
+
+if (!patchedIntl) {
+  console.error('[!] Failed to inject headers for codebuddy-intl!');
+  process.exit(1);
 }
 
 // 5. Write patched content
@@ -231,5 +243,5 @@ try {
   process.exit(1);
 }
 
-console.log('\n[✔] Patch applied successfully!');
+console.log('\n[✔] Patch applied successfully to ' + path.basename(targetFile) + '!');
 console.log('[*] IMPORTANT: Please restart 9router (e.g. docker restart 9router)');

@@ -23,72 +23,63 @@ Server Tencent CodeBuddy mewajibkan header verifikasi channel IDE resmi dan pela
 Secara default, instalasi resmi 9router belum menyertakan header-header verifikasi ini pada executor CodeBuddy (`CodeBuddyIntlExecutor` & `CodeBuddyExecutor`), sehingga Tencent menganggap panggilan API tersebut tidak sah (*channel verification failed*).
 
 Script patch ini secara otomatis:
-1. Mendeteksi lokasi instalasi 9router di sistem Anda (Linux VPS / Windows / macOS).
-2. Menemukan file chunk webpack executor CodeBuddy.
+1. Mendeteksi lokasi instalasi 9router di sistem Anda (Linux VPS, Windows, macOS, atau Docker container).
+2. Menemukan file chunk webpack executor CodeBuddy yang tepat (`super("codebuddy-intl")`).
 3. Membuat backup otomatis file asli (`.bak`).
 4. Menginjeksi metode `buildHeaders()` lengkap dengan generator UUID & tracing b3.
 5. Memverifikasi sintaks kode hasil patch agar 9router tetap aman dan stabil.
 
 ---
 
-## 🚀 Cara Pemasangan di VPS (Linux / Ubuntu / Debian)
+## 🐳 Cara Pemasangan di Docker (Paling Umum di VPS)
 
-### 1. Masuk ke VPS dan Clone Repository
+Jika 9router Anda berjalan di dalam Docker container (seperti image `decolua/9router`):
+
 ```bash
 git clone https://github.com/ajiazhar/9router-codebuddy-fix.git
 cd 9router-codebuddy-fix
+docker cp patch.js 9router:/tmp/patch.js
+docker exec -it 9router node /tmp/patch.js
+docker restart 9router
 ```
 
-### 2. Jalankan Script Patch
+---
+
+## 🚀 Cara Pemasangan di Linux VPS (Non-Docker / Standalone)
+
 ```bash
+git clone https://github.com/ajiazhar/9router-codebuddy-fix.git
+cd 9router-codebuddy-fix
 node patch.js
 ```
 
-*Jika instalasi 9router Anda berada di path non-standar, Anda bisa menyebutkan path-nya secara langsung:*
-```bash
-node patch.js /path/to/node_modules/9router
-```
-
-### 3. Restart 9router di VPS Anda
-Tergantung cara Anda menjalankan 9router:
-
+Restart service 9router di VPS:
 * **Jika menggunakan PM2:**
   ```bash
   pm2 restart 9router
-  # atau
-  pm2 restart all
   ```
-
-* **Jika menggunakan Systemd Service:**
+* **Jika menggunakan Systemd:**
   ```bash
   sudo systemctl restart 9router
-  ```
-
-* **Jika dijalankan manual di terminal / screen / tmux:**
-  Hentikan proses (`Ctrl + C`), lalu jalankan kembali:
-  ```bash
-  9router
   ```
 
 ---
 
 ## 💻 Cara Pemasangan di Windows
 
-Buka Command Prompt atau PowerShell, lalu jalankan:
-
+Buka Command Prompt atau PowerShell:
 ```powershell
-git clone https://github.com/<username>/9router-codebuddy-fix.git
+git clone https://github.com/ajiazhar/9router-codebuddy-fix.git
 cd 9router-codebuddy-fix
 node patch.js
 ```
-
-Restart 9router setelah patch berhasil.
+Restart aplikasi 9router setelah patch berhasil.
 
 ---
 
-## 🔄 Cara Rollback / Mengembalikan ke Asli (Restore)
+## 🔄 Cara Rollback (Restore)
 
-Jika ingin membatalkan patch dan kembali ke file bawaan:
+Jika ingin membatalkan patch dan kembali ke file bawaan original:
 ```bash
 node restore.js
 ```
@@ -96,17 +87,9 @@ Lalu restart 9router.
 
 ---
 
-## ⚠️ Catatan Penting Mengenai Pembaruan 9router (`npm update`)
+## ⚠️ Catatan Pembaruan 9router (`npm update` / Docker pull)
 
-Setiap kali Anda memperbarui 9router via npm:
-```bash
-npm update -g 9router
-```
-NPM akan menimpa file chunk dengan versi resmi terbaru. Jika setelah update muncul error 11128 kembali, Anda cukup menjalankan ulang:
-```bash
-node patch.js
-```
-dan restart 9router.
+Jika suatu saat container atau package 9router diperbarui ke versi baru, npm/docker akan menimpa file chunk dengan versi default. Cukup jalankan ulang script patch di atas untuk mengaktifkan kembali kodenya.
 
 ---
 

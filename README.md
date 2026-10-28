@@ -35,7 +35,7 @@ Script patch ini secara otomatis:
 
 ### 1. Masuk ke VPS dan Clone Repository
 ```bash
-git clone https://github.com/<username>/9router-codebuddy-fix.git
+git clone https://github.com/ajiazhar/9router-codebuddy-fix.git
 cd 9router-codebuddy-fix
 ```
 

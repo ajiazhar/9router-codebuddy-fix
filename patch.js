@@ -16,34 +16,86 @@ console.log('=== 9Router CodeBuddy Fix Patcher ===\n');
 
 // 1. Detect 9router installation path
 function get9RouterPath() {
+  // Check environment variable
   if (process.env.NINEROUTER_PATH && fs.existsSync(process.env.NINEROUTER_PATH)) {
     return process.env.NINEROUTER_PATH;
   }
   
+  // Check CLI argument
   if (process.argv[2] && fs.existsSync(process.argv[2])) {
-    return process.argv[2];
+    let argPath = path.resolve(process.argv[2]);
+    // If user passed bin path or nested path, resolve to package root
+    if (fs.existsSync(path.join(argPath, 'app', '.next-cli-build'))) return argPath;
+    if (fs.existsSync(path.join(argPath, '..', 'app', '.next-cli-build'))) return path.dirname(argPath);
+    return argPath;
   }
 
+  // Strategy A: Detect from "which 9router" or "where 9router" binary symlink
   try {
-    const globalRoot = execSync('npm root -g', { encoding: 'utf8' }).trim();
-    const candidate = path.join(globalRoot, '9router');
-    if (fs.existsSync(candidate)) {
-      return candidate;
+    const isWin = process.platform === 'win32';
+    const whichCmd = isWin ? 'where 9router' : 'which 9router 2>/dev/null';
+    const binOut = execSync(whichCmd, { encoding: 'utf8' }).trim().split('\n')[0].trim();
+    if (binOut && fs.existsSync(binOut)) {
+      const realBin = fs.realpathSync(binOut);
+      let curr = path.dirname(realBin);
+      for (let i = 0; i < 5; i++) {
+        const pkgPath = path.join(curr, 'package.json');
+        if (fs.existsSync(pkgPath)) {
+          try {
+            const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+            if (pkg.name === '9router') return curr;
+          } catch (e) {}
+        }
+        if (fs.existsSync(path.join(curr, 'app', '.next-cli-build'))) return curr;
+        curr = path.dirname(curr);
+      }
     }
   } catch (e) {}
 
-  // Fallbacks for Linux / macOS / Windows common locations
+  // Strategy B: npm root -g
+  try {
+    const globalRoot = execSync('npm root -g', { encoding: 'utf8' }).trim();
+    const candidate = path.join(globalRoot, '9router');
+    if (fs.existsSync(candidate)) return candidate;
+  } catch (e) {}
+
+  // Strategy C: pnpm / yarn / bun global root
+  for (const mgr of ['pnpm root -g', 'yarn global dir', 'bun pm -g bin']) {
+    try {
+      const out = execSync(mgr, { encoding: 'utf8' }).trim();
+      const candidate = path.join(out, 'node_modules', '9router');
+      if (fs.existsSync(candidate)) return candidate;
+      const direct = path.join(out, '9router');
+      if (fs.existsSync(direct)) return direct;
+    } catch (e) {}
+  }
+
+  // Strategy D: Common Linux / macOS / Windows fallbacks
   const fallbacks = [
     '/usr/lib/node_modules/9router',
     '/usr/local/lib/node_modules/9router',
-    path.join(process.env.HOME || '', '.nvm/versions/node', process.version, 'lib/node_modules/9router'),
-    path.join(process.env.APPDATA || '', 'npm/node_modules/9router')
+    '/var/lib/node_modules/9router',
+    path.join(process.env.HOME || '', '.npm-global', 'lib', 'node_modules', '9router'),
+    path.join(process.env.HOME || '', '.local', 'share', 'pnpm', 'global', '5', 'node_modules', '9router')
   ];
 
+  // Add NVM versions if present
+  const nvmDir = path.join(process.env.HOME || '', '.nvm', 'versions', 'node');
+  if (fs.existsSync(nvmDir)) {
+    try {
+      const versions = fs.readdirSync(nvmDir);
+      for (const v of versions) {
+        fallbacks.push(path.join(nvmDir, v, 'lib', 'node_modules', '9router'));
+      }
+    } catch (e) {}
+  }
+
+  if (process.env.APPDATA) {
+    fallbacks.push(path.join(process.env.APPDATA, 'npm', 'node_modules', '9router'));
+  }
+
   for (const f of fallbacks) {
-    if (fs.existsSync(f)) {
-      return f;
-    }
+    if (fs.existsSync(f)) return f;
   }
 
   return null;
@@ -51,8 +103,12 @@ function get9RouterPath() {
 
 const ninerouterDir = get9RouterPath();
 if (!ninerouterDir) {
-  console.error('[!] Error: 9router installation not found.');
-  console.error('    Please specify the path manually: node patch.js /path/to/9router');
+  console.error('[!] Error: 9router installation not found automatically.');
+  console.error('    Please find your 9router path using:');
+  console.error('        which 9router');
+  console.error('        readlink -f $(which 9router)');
+  console.error('    Then pass the path, for example:');
+  console.error('        node patch.js /usr/local/lib/node_modules/9router\n');
   process.exit(1);
 }
 
@@ -163,7 +219,6 @@ function clearDatabaseLocks() {
   for (const dbPath of dbPaths) {
     if (fs.existsSync(dbPath)) {
       try {
-        // Run sqlite3 if available
         execSync(`sqlite3 "${dbPath}" "UPDATE providerConnections SET data = json_set(data, '$.modelLocks', json('{}')) WHERE provider LIKE 'codebuddy%';"`, { stdio: 'ignore' });
         console.log(`[+] Cleared modelLocks in database: ${dbPath}`);
       } catch (e) {
